@@ -1,16 +1,29 @@
 import streamlit as st
 import networkx as nx
 import pandas as pd
+import numpy as np
 from pyvis.network import Network
 import streamlit.components.v1 as components
 import tempfile
 import os
 import matplotlib.pyplot as plt
 import imageio.v2 as imageio
+import ui
 
 # Set page configuration
 st.set_page_config(page_title="Routing Simulator with Animation", layout="wide")
 st.title("🌐 Interactive Routing Protocol Simulator")
+
+# Initialize session state values
+if 'dark_mode' not in st.session_state:
+    st.session_state.dark_mode = False
+
+# UI: dark mode toggle in the sidebar (updates st.session_state.dark_mode)
+with st.sidebar:
+    st.checkbox("🌙 Dark mode", value=st.session_state.dark_mode, key='dark_mode', help='Toggle dark theme')
+
+# inject global theme and UI helpers (use current dark preference)
+ui.inject_theme(st.session_state.dark_mode)
 
 # Initialize session state graph
 if 'G' not in st.session_state:
@@ -20,53 +33,87 @@ G = st.session_state.G
 # --- Functions ---
 def add_node_ui():
     with st.sidebar.expander("➕ Add Node"):
-        new_node = st.text_input("Node name")
-        if st.button("Add Node"):
-            if new_node:
-                if new_node in G.nodes:
-                    st.warning("Node already exists.")
+        # Use a form so the text input and submit are grouped and don't
+        # trigger intermediate reruns that lose focus.
+        with st.form(key="form_add_node", clear_on_submit=True):
+            new_node = st.text_input("Node name", key="add_node_name")
+            submitted = st.form_submit_button("Add Node")
+            if submitted:
+                if not new_node or new_node.strip() == "":
+                    st.error("Please enter a valid node name.")
                 else:
-                    G.add_node(new_node)
-                    st.success(f"Node '{new_node}' added.")
+                    if new_node in G.nodes:
+                        st.warning("Node already exists.")
+                    else:
+                        G.add_node(new_node)
+                        ui.toast(f"Node '{new_node}' added.", kind='success')
 
 def add_edge_ui():
     with st.sidebar.expander("➕ Add Edge"):
-        node1 = st.text_input("From")
-        node2 = st.text_input("To")
-        weight = st.number_input("Weight", min_value=1, step=1)
-        add_reverse = st.checkbox("Add reverse edge", value=False)
-        if st.button("Add Edge"):
-            if node1 in G.nodes and node2 in G.nodes:
-                if G.has_edge(node1, node2):
-                    st.warning("Edge already exists.")
+        # Group edge inputs into a form to avoid partial reruns while selecting
+        # nodes; this improves focus and reliability.
+        with st.form(key="form_add_edge", clear_on_submit=True):
+            node_options = list(G.nodes) if len(G.nodes) else [""]
+            node1 = st.selectbox("From", options=node_options, key="edge_from")
+            node2 = st.selectbox("To", options=node_options, key="edge_to")
+            weight = st.number_input("Weight", min_value=1, step=1, value=1, key='edge_weight')
+            add_reverse = st.checkbox("Add reverse edge", value=False, key='edge_reverse')
+            submitted = st.form_submit_button("Add Edge")
+            if submitted:
+                if not node1 or not node2:
+                    st.error("Select both endpoints.")
+                elif node1 == node2:
+                    st.error("Cannot create self-loop.")
+                elif node1 in G.nodes and node2 in G.nodes:
+                    if G.has_edge(node1, node2):
+                        st.warning("Edge already exists.")
+                    else:
+                        G.add_edge(node1, node2, weight=weight)
+                        if add_reverse and not G.has_edge(node2, node1):
+                            G.add_edge(node2, node1, weight=weight)
+                        ui.toast(f"Edge {node1} → {node2} added.", kind='success')
                 else:
-                    G.add_edge(node1, node2, weight=weight)
-                    if add_reverse and not G.has_edge(node2, node1):
-                        G.add_edge(node2, node1, weight=weight)
-                    st.success(f"Edge {node1} ➔ {node2} added.")
-            else:
-                st.error("One or both nodes do not exist.")
+                    st.error("One or both nodes do not exist.")
 
 def remove_node_ui():
     with st.sidebar.expander("🗑️ Remove Node"):
         if len(G.nodes) == 0:
             st.info("No nodes to remove.")
             return
-        del_node = st.selectbox("Select node", options=list(G.nodes), key="delnode")
-        if st.button("Remove Node"):
-            G.remove_node(del_node)
-            st.warning(f"Node '{del_node}' removed.")
+        with st.form(key="form_remove_node"):
+            del_node = st.selectbox("Select node", options=list(G.nodes), key="delnode")
+            confirm = st.checkbox(f"Confirm remove '{del_node}'", key='confirm_remove_node')
+            submitted = st.form_submit_button("Remove Node")
+            if submitted:
+                if confirm:
+                    if del_node in G.nodes:
+                        G.remove_node(del_node)
+                        ui.toast(f"Node '{del_node}' removed.", kind='warn')
+                    else:
+                        st.error("Selected node no longer exists.")
+                else:
+                    st.info("Check the confirm box to remove the node.")
 
 def remove_edge_ui():
     with st.sidebar.expander("🗑️ Remove Edge"):
         if len(G.edges) == 0:
             st.info("No edges to remove.")
             return
-        edge_list = list(G.edges)
-        del_edge = st.selectbox("Select edge", options=edge_list, key="deledge")
-        if st.button("Remove Edge"):
-            G.remove_edge(*del_edge)
-            st.warning(f"Edge {del_edge} removed.")
+        edge_list = [f"{u} -> {v}" for u, v in G.edges]
+        with st.form(key="form_remove_edge"):
+            del_edge = st.selectbox("Select edge", options=edge_list, key="deledge")
+            confirm = st.checkbox(f"Confirm remove '{del_edge}'", key='confirm_remove_edge')
+            submitted = st.form_submit_button("Remove Edge")
+            if submitted:
+                if confirm:
+                    u, v = del_edge.split(" -> ")
+                    if G.has_edge(u, v):
+                        G.remove_edge(u, v)
+                        ui.toast(f"Edge {u} → {v} removed.", kind='warn')
+                    else:
+                        st.error("Selected edge no longer exists.")
+                else:
+                    st.info("Check the confirm box to remove the edge.")
 
 def load_sample_topology():
     if st.sidebar.button("📅 Load Sample Topology"):
@@ -75,15 +122,34 @@ def load_sample_topology():
             ("A", "B", 2), ("B", "C", 3), ("C", "D", 1),
             ("A", "D", 10), ("B", "D", 2)
         ])
-        st.rerun()
+        st.success("Sample topology loaded.")
+        ui.toast("Sample topology loaded", kind='info')
+        # trigger a rerun only after the sample is loaded so the UI refreshes
+        # and form controls keep focus during normal interaction.
+        try:
+            # prefer the stable API when available
+            st.experimental_rerun()
+        except Exception:
+            # fallback to st.rerun if present in older Streamlit versions
+            try:
+                st.rerun()
+            except Exception:
+                pass
 
 def draw_pyvis(G, path=None):
-    net = Network(height="500px", directed=True)
+    net = Network(height="550px", width="100%", directed=True, bgcolor="#ffffff")
+    net.barnes_hut()
     for node in G.nodes:
-        net.add_node(node, label=node)
+        net.add_node(node, label=node, title=node)
+    # build set of edges in path for quick lookup
+    path_edges = set()
+    if path and len(path) > 1:
+        path_edges = set(zip(path, path[1:]))
+
     for u, v, data in G.edges(data=True):
-        color = "green" if path and (u, v) in zip(path, path[1:]) else "gray"
-        net.add_edge(u, v, value=1, label=str(data['weight']), color=color)
+        color = "#2ecc71" if (u, v) in path_edges else "#95a5a6"
+        width = 3 if (u, v) in path_edges else 1
+        net.add_edge(u, v, value=data.get('weight', 1), label=str(data.get('weight', '')), color=color, width=width)
 
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
     net.write_html(temp_file.name)
@@ -110,9 +176,9 @@ def generate_routing_table(G, source, protocol):
                     p = nx.bellman_ford_path(G, source, node, weight='weight')
                     dist = nx.bellman_ford_path_length(G, source, node, weight='weight')
                 next_hop = p[1] if len(p) > 1 else "-"
-                table.append((node, next_hop, dist, " ➔ ".join(p)))
+                table.append((node, next_hop, float(dist), " ➔ ".join(p)))
             except:
-                table.append((node, "-", "∞", "No path"))
+                table.append((node, "-", float('inf'), "No path"))
     df = pd.DataFrame(table, columns=["Destination", "Next Hop", "Cost", "Path"])
     return df
 
@@ -140,6 +206,7 @@ def generate_gif_from_path(G, path, filename="routing_animation.gif"):
     return gif_path
 
 # --- UI Components ---
+# --- UI Components (sidebar first) ---
 add_node_ui()
 add_edge_ui()
 remove_node_ui()
@@ -151,25 +218,55 @@ st.sidebar.header("Routing Settings")
 protocol = st.sidebar.selectbox("Routing Protocol", ["Dijkstra (OSPF)", "Bellman-Ford (RIP)"])
 nodes = list(G.nodes)
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Quick Tips**")
+st.sidebar.write("- Add nodes and edges on the left.\n- Select source/destination below and run the simulation.\n- Export routing tables or GIFs for reports.")
+
 if len(nodes) < 2:
     st.info("Add at least two nodes to simulate routing.")
     st.stop()
 
-source = st.sidebar.selectbox("Source", nodes)
-destination = st.sidebar.selectbox("Destination", nodes)
+# Use radio buttons for small topologies (more reliably styled) and
+# fall back to selectbox for larger lists to conserve vertical space.
+if len(nodes) <= 10:
+    source = st.sidebar.radio("Source", nodes, index=0)
+    # choose a sensible default index for destination (not the same as source when possible)
+    dest_index = 1 if len(nodes) > 1 else 0
+    destination = st.sidebar.radio("Destination", nodes, index=dest_index)
+else:
+    source = st.sidebar.selectbox("Source", nodes)
+    destination = st.sidebar.selectbox("Destination", nodes)
 
-try:
-    path, cost = simulate_routing(G, source, destination, protocol)
-    html_path = draw_pyvis(G, path)
-    components.html(open(html_path, "r", encoding="utf-8").read(), height=550)
-    os.remove(html_path)
+col1, col2 = st.columns([2, 1])
 
-    st.success(f"📍 Shortest Path: {' ➔ '.join(path)}")
-    st.info(f"💰 Total Cost: {cost}")
+with col1:
+    st.subheader("Network Topology")
+    try:
+        path, cost = simulate_routing(G, source, destination, protocol)
+        html_path = draw_pyvis(G, path)
+        with open(html_path, "r", encoding="utf-8") as f:
+            components.html(f.read(), height=550)
+        os.remove(html_path)
 
-    st.subheader(f"📄 Routing Table for {source}")
+        st.success(f"📍 Shortest Path: {' ➔ '.join(path)}")
+        st.info(f"💰 Total Cost: {cost}")
+
+        # GIF export button
+        if st.button("🎞️ Export Path Animation as GIF"):
+            gif_path = generate_gif_from_path(G, path)
+            with open(gif_path, "rb") as f:
+                st.download_button("⬇️ Download Path GIF", f, file_name="routing_path.gif", mime="image/gif")
+
+    except nx.NetworkXNoPath:
+        st.error(f"🚫 No path exists from {source} to {destination}.")
+
+with col2:
+    st.subheader(f"📄 Routing Table ({source})")
     df = generate_routing_table(G, source, protocol)
-    st.dataframe(df, use_container_width=True)
+    # convert inf to a printable symbol for display only to avoid Arrow serialization issues
+    display_df = df.copy()
+    display_df['Cost'] = display_df['Cost'].apply(lambda x: '∞' if np.isinf(x) else x)
+    st.dataframe(display_df, use_container_width=True)
 
     if st.checkbox("📘 Show forwarding tables for all routers"):
         for router in G.nodes:
@@ -177,7 +274,9 @@ try:
                 continue
             st.markdown(f"#### 📑 Router: {router}")
             table_df = generate_routing_table(G, router, protocol)
-            st.dataframe(table_df, use_container_width=True)
+            table_df_display = table_df.copy()
+            table_df_display['Cost'] = table_df_display['Cost'].apply(lambda x: '∞' if np.isinf(x) else x)
+            st.dataframe(table_df_display, use_container_width=True)
 
     if st.button("📤 Export all routing tables to CSV"):
         all_tables = pd.DataFrame()
@@ -189,13 +288,5 @@ try:
         csv = all_tables.to_csv(index=False).encode("utf-8")
         st.download_button("⬇️ Download CSV", data=csv, file_name="routing_tables.csv", mime="text/csv")
 
-    if st.button("🎞️ Export Path Animation as GIF"):
-        gif_path = generate_gif_from_path(G, path)
-        with open(gif_path, "rb") as f:
-            st.download_button("⬇️ Download Path GIF", f, file_name="routing_path.gif", mime="image/gif")
-
-except nx.NetworkXNoPath:
-    st.error(f"🚫 No path exists from {source} to {destination}.")
-
 st.markdown("---")
-st.caption("💡 Made by Hira — Computer Networking Visualization with Streamlit + Pyvis")
+st.caption("💡 Made by Lucky — Computer Networking Visualization with Streamlit + Pyvis")
